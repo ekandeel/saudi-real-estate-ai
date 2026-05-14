@@ -1,9 +1,8 @@
-streamlit==1.57.0
-xgboost==3.2.0
-scikit-learn==1.8.0
-pandas==3.0.2
-numpy==2.4.4
-scipy==1.15.3
-folium==0.19.6
-streamlit-folium==0.25.0
-pyarrow==20.0.0
+streamlit
+xgboost
+scikit-learn
+pandas
+numpy
+scipy
+folium
+streamlit-folium

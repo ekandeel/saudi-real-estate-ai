@@ -55,7 +55,7 @@ def load_stats():
 
 @st.cache_data
 def load_posts_geo():
-    return pd.read_parquet(os.path.join(BASE,'posts_geo.parquet'))
+    return pd.read_csv(os.path.join(BASE,'posts_geo.csv'))
 
 @st.cache_data
 def load_centroids():
