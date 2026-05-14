@@ -91,26 +91,39 @@ st.divider()
 ltype_label = st.radio("نوع العملية", ["بيع", "إيجار"], horizontal=True)
 ltype = 'sale' if ltype_label == 'بيع' else 'rent'
 
+st.markdown("---")
+
+# Row 1: City + Neighborhood
 col1, col2 = st.columns(2)
 with col1:
     city_list = sorted([c for c in mapping.keys() if c not in ('___','---')])
     default_city = city_list.index('الرياض') if 'الرياض' in city_list else 0
-    city = st.selectbox("المدينة", city_list, index=default_city)
-
-    area = st.number_input("المساحة (م²)", min_value=20, max_value=50000, value=150, step=10)
-    has_parking  = st.checkbox("موقف سيارة", value=True)
-    has_elevator = st.checkbox("مصعد", value=False)
-
+    city = st.selectbox("🏙️ المدينة", city_list, index=default_city)
 with col2:
     nbhds = sorted([n for n in mapping.get(city,[]) if n not in ('___','---','')])
     if not nbhds: nbhds = ['غير محدد']
-    neighborhood = st.selectbox("الحي", nbhds)
+    neighborhood = st.selectbox("📍 الحي", nbhds)
 
-    rooms = st.slider("عدد الغرف", 1, 12, 3)
-    has_ac       = st.checkbox("مكيف مركزي", value=False)
-    is_furnished = st.checkbox("مفروش", value=False)
+# Row 2: Area + Rooms + Baths
+col3, col4, col5 = st.columns(3)
+with col3:
+    area  = st.number_input("📐 المساحة (م²)", min_value=20, max_value=50000, value=150, step=10)
+with col4:
+    rooms = st.number_input("🛏️ عدد الغرف", min_value=1, max_value=12, value=3, step=1)
+with col5:
+    baths = st.number_input("🚿 عدد الحمامات", min_value=1, max_value=10, value=2, step=1)
 
-baths = st.slider("عدد الحمامات", 1, 10, 2)
+# Row 3: Amenities
+st.markdown("**المرافق والمميزات:**")
+col6, col7, col8, col9 = st.columns(4)
+with col6:
+    has_parking  = st.checkbox("🚗 موقف سيارة", value=True)
+with col7:
+    has_elevator = st.checkbox("🛗 مصعد", value=False)
+with col8:
+    has_ac       = st.checkbox("❄️ مكيف مركزي", value=False)
+with col9:
+    is_furnished = st.checkbox("🛋️ مفروش", value=False)
 
 predict_btn = st.button("🔍 تقييم العقار", use_container_width=True, type="primary")
 
