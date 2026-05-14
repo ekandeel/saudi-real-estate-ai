@@ -128,8 +128,8 @@ with loc_tab1:
 
         # Find nearest district
         dist_deg, idx = cent_tree.query([[sel_lat, sel_lng]], k=1)
-        dist_km = dist_deg[0][0] * 111
-        row = cent_df.iloc[idx[0][0]]
+        dist_km = float(dist_deg.ravel()[0]) * 111
+        row = cent_df.iloc[int(idx.ravel()[0])]
         sel_region   = row['region_ar']
         sel_city     = row['city_ar']
         sel_district = row['district_ar']
