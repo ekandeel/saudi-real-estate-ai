@@ -4,6 +4,7 @@ import numpy as np
 import pickle, json, os
 from scipy.spatial import cKDTree
 import folium
+from branca.element import MacroElement, Template
 from streamlit_folium import st_folium
 
 st.set_page_config(
@@ -49,6 +50,8 @@ footer{text-align:center;color:#999;font-size:11px;margin-top:24px;}
 """, unsafe_allow_html=True)
 
 BASE = os.path.dirname(__file__)
+DEFAULT_MAP_CENTER = [24.7136, 46.6753]
+DEFAULT_MAP_ZOOM = 11
 
 # ── Load resources ────────────────────────────────────────────────────────────
 @st.cache_resource
@@ -77,6 +80,29 @@ def load_posts_geo():
 def load_centroids():
     return pd.read_csv(os.path.join(BASE,'centroids.csv'))
 
+@st.cache_data
+def load_model_baselines():
+    posts = load_posts_geo()
+    defaults = {
+        'rooms_clean': 3,
+        'baths_clean': 2,
+        'has_elevator': 0,
+        'has_parking': 0,
+        'has_ac': 0,
+        'is_furnished': 0,
+    }
+    baselines = {}
+    for lt in ['sale', 'rent']:
+        base = defaults.copy()
+        rows = posts[posts['listing_type_key'] == lt]
+        if not rows.empty:
+            for col in ['rooms_clean', 'baths_clean', 'has_elevator', 'has_parking']:
+                val = rows[col].dropna().median()
+                if pd.notna(val):
+                    base[col] = int(round(float(val)))
+        baselines[lt] = base
+    return baselines
+
 @st.cache_resource
 def build_trees():
     cent  = load_centroids()
@@ -88,13 +114,14 @@ hier      = load_hierarchy()
 stats     = load_stats()
 posts_geo = load_posts_geo()
 cent_df   = load_centroids()
+model_baselines = load_model_baselines()
 cent_tree, posts_tree = build_trees()
 
 # ── Session state ─────────────────────────────────────────────────────────────
 for k,v in {
     'sel_region':'منطقة الرياض','sel_city':'الرياض',
     'sel_district':'الملقا','sel_lat':24.812,'sel_lng':46.698,
-    'map_center':[24.7136,46.6753],'map_zoom':11,
+    'map_center':DEFAULT_MAP_CENTER,'map_zoom':DEFAULT_MAP_ZOOM,
     'location_source':'list',
     'last_map_click_key': None,
     'last_folium_map_key': None,
@@ -113,6 +140,95 @@ if 'last_list_widget_selection' not in st.session_state:
         st.session_state.get('dd_city', st.session_state['sel_city']),
         st.session_state.get('dd_district', st.session_state['sel_district']),
     )
+
+
+def _valid_click(click_data):
+    if not isinstance(click_data, dict):
+        return None
+    try:
+        lat = float(click_data.get("lat"))
+        lng = float(click_data.get("lng"))
+    except (TypeError, ValueError):
+        return None
+    if not (np.isfinite(lat) and np.isfinite(lng)):
+        return None
+    return {"lat": lat, "lng": lng}
+
+
+def _click_key(click_data):
+    return (round(click_data["lat"], 6), round(click_data["lng"], 6))
+
+
+def handle_map_change():
+    map_data = st.session_state.get("property_map") or {}
+    current_clicks = {
+        "last_folium_map_key": _valid_click(map_data.get("last_clicked")),
+        "last_folium_object_key": _valid_click(map_data.get("last_object_clicked")),
+    }
+
+    selected_state_key = None
+    selected_click = None
+    selected_key = None
+    for state_key in ("last_folium_map_key", "last_folium_object_key"):
+        click_data = current_clicks[state_key]
+        if not click_data:
+            continue
+        candidate_key = _click_key(click_data)
+        if st.session_state.get(state_key) != candidate_key:
+            selected_state_key = state_key
+            selected_click = click_data
+            selected_key = candidate_key
+            break
+
+    if not selected_click:
+        return
+
+    _, i_arr = cent_tree.query([[selected_click["lat"], selected_click["lng"]]], k=1)
+    nr = cent_df.iloc[int(i_arr.ravel()[0])]
+    click_update = {
+        "sel_lat": selected_click["lat"],
+        "sel_lng": selected_click["lng"],
+        "sel_region": nr["region_ar"],
+        "sel_city": nr["city_ar"],
+        "sel_district": nr["district_ar"],
+        "last_click_info": True,
+        "location_source": "map",
+        "last_map_click_key": selected_key,
+        "last_list_selection": (nr["region_ar"], nr["city_ar"], nr["district_ar"]),
+    }
+
+    for state_key, click_data in current_clicks.items():
+        if click_data:
+            click_update[state_key] = _click_key(click_data)
+    if selected_state_key:
+        click_update[selected_state_key] = selected_key
+
+    st.session_state.update(click_update)
+
+
+class DynamicLegend(MacroElement):
+    def __init__(self, html):
+        super().__init__()
+        self._name = "DynamicLegend"
+        self.html_json = json.dumps(html)
+        self._template = Template("""
+        {% macro script(this, kwargs) %}
+        if (window.propertyLegendControl) {
+            try {
+                map_div.removeControl(window.propertyLegendControl);
+            } catch (e) {}
+        }
+        window.propertyLegendControl = L.control({position: 'bottomright'});
+        window.propertyLegendControl.onAdd = function (map) {
+            var div = L.DomUtil.create('div', 'property-map-legend leaflet-control');
+            div.innerHTML = {{ this.html_json }};
+            L.DomEvent.disableClickPropagation(div);
+            L.DomEvent.disableScrollPropagation(div);
+            return div;
+        };
+        window.propertyLegendControl.addTo(map_div);
+        {% endmacro %}
+        """)
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("## 🏠 مستشار العقار السعودي الذكي")
@@ -214,19 +330,7 @@ with left_col:
     st.caption(f"البحث: {area-area_tol} م² ← {area+area_tol} م²")
     st.caption(f"البحث: {area-area_tol} م² ← {area+area_tol} م²")
 
-    d1,d2 = st.columns(2)
-    with d1: rooms = st.number_input("🛏️ الغرف",    1, 12, 3, 1)
-    with d2: baths = st.number_input("🚿 الحمامات", 1, 10, 2, 1)
-
     radius_km = st.number_input("🔍 نطاق البحث كم", 1, 15, 3, 1)
-
-    st.markdown("**✨ المرافق:**")
-    a1,a2 = st.columns(2)
-    with a1:
-        has_parking  = st.checkbox("🚗 موقف سيارة", value=True)
-        has_ac       = st.checkbox("❄️ مكيف مركزي", value=False)
-    with a2:
-        is_furnished = st.checkbox("🛋️ مفروش", value=False)
 
     st.markdown("---")
     predict_btn = st.button("🔍 تقييم العقار", use_container_width=True, type="primary")
@@ -242,10 +346,11 @@ with map_col:
     sel_region   = st.session_state['sel_region']
 
     m = folium.Map(
-        location=st.session_state['map_center'],
-        zoom_start=st.session_state['map_zoom'],
+        location=DEFAULT_MAP_CENTER,
+        zoom_start=DEFAULT_MAP_ZOOM,
         tiles='CartoDB positron'
     )
+    overlay = folium.FeatureGroup(name="property_overlay")
 
     # District centroids for current city
     city_cents = cent_df[cent_df['city_ar']==sel_city]
@@ -258,7 +363,7 @@ with map_col:
             fill=True, fill_opacity=0.85 if is_sel else 0.35,
             weight=2 if is_sel else 1,
             tooltip=f"حي {cr['district_ar']} | {int(cr['post_count'])} إعلان"
-        ).add_to(m)
+        ).add_to(overlay)
 
     # Nearby listings with area filter
     radius_deg = radius_km / 111.0
@@ -281,14 +386,14 @@ with map_col:
             fill=True, fill_opacity=0.7 if matched else 0.4,
             weight=1,
             tooltip=f"{'✅ ' if matched else ''}{pr['price_per_sqm']:,.0f} ر/م² | {pr['area_clean']:.0f}م²"
-        ).add_to(m)
+        ).add_to(overlay)
 
     # Search circle
     folium.Circle(
         [sel_lat, sel_lng], radius=radius_km*1000,
         color='#2d5fa6', fill=True, fill_opacity=0.04,
         weight=1.5, dash_array='6'
-    ).add_to(m)
+    ).add_to(overlay)
 
     # Selected marker
     if sel_district:
@@ -296,56 +401,34 @@ with map_col:
             [sel_lat, sel_lng],
             tooltip=f"📍 {sel_district}",
             icon=folium.Icon(color='red', icon='home', prefix='fa')
-        ).add_to(m)
+        ).add_to(overlay)
 
-    # Legend
-    m.get_root().html.add_child(folium.Element(f"""
-    <div style="position:fixed;bottom:20px;right:20px;z-index:1000;
-        background:white;padding:10px 14px;border-radius:8px;
-        border:1px solid #ddd;font-size:12px;direction:rtl;min-width:170px;">
-        <div style="font-weight:600;margin-bottom:5px">دليل الألوان</div>
+    matched_median_ppsqm = nearby_ltype['price_per_sqm'].dropna().median() if not nearby_ltype.empty else None
+    matched_median_text = f" | وسيط {matched_median_ppsqm:,.0f} ر/م²" if pd.notna(matched_median_ppsqm) else ""
+
+    legend_html = f"""
+    <div style="background:white;padding:10px 14px;border-radius:8px;
+        border:1px solid #ddd;font-size:12px;direction:rtl;min-width:190px;
+        line-height:1.5;box-shadow:0 1px 5px rgba(0,0,0,.18);">
         <div>🔴 الحي المختار</div>
-        <div>🔵 أحياء المدينة</div>
-        <div>🟢 إعلانات مطابقة للمساحة ({len(nearby_ltype)})</div>
+        <div>🔵 أحياء المدينة ({len(city_cents)})</div>
+        <div>🟢 إعلانات مطابقة للمساحة ({len(nearby_ltype)}){matched_median_text}</div>
         <div>⚪ إعلانات أخرى قريبة ({len(nearby_all_type)-len(nearby_ltype)})</div>
-        <div style="margin-top:4px;color:#666">نطاق: {radius_km} كم | مساحة: {area-area_tol}–{area+area_tol} م²</div>
     </div>
-    """))
+    """
+    overlay.add_child(DynamicLegend(legend_html))
 
-    map_data = st_folium(m, height=530, use_container_width=True,
-                         returned_objects=["last_clicked", "last_object_clicked"])
-
-    # Handle map click
-    click_candidates = []
-    seen_click_keys = {}
-    if map_data and not predict_btn:
-        for state_key, click_data in (
-            ('last_folium_object_key', map_data.get("last_object_clicked")),
-            ('last_folium_map_key', map_data.get("last_clicked")),
-        ):
-            if click_data and "lat" in click_data and "lng" in click_data:
-                click_key = (round(float(click_data["lat"]), 6), round(float(click_data["lng"]), 6))
-                seen_click_keys[state_key] = click_key
-                if st.session_state.get(state_key) != click_key:
-                    click_candidates.append((state_key, click_data, click_key))
-
-    if click_candidates:
-        state_key, clk, click_key = click_candidates[0]
-        d_arr, i_arr = cent_tree.query([[clk["lat"], clk["lng"]]], k=1)
-        nr = cent_df.iloc[int(i_arr.ravel()[0])]
-        click_update = {
-            'sel_lat': clk["lat"], 'sel_lng': clk["lng"],
-            'sel_region': nr['region_ar'], 'sel_city': nr['city_ar'],
-            'sel_district': nr['district_ar'],
-            'map_center': [clk["lat"], clk["lng"]],
-            'map_zoom': 14, 'last_click_info': True,
-            'location_source': 'map',
-            'last_map_click_key': click_key,
-            'last_list_selection': (nr['region_ar'], nr['city_ar'], nr['district_ar']),
-        }
-        click_update.update(seen_click_keys)
-        st.session_state.update(click_update)
-        st.rerun()
+    map_data = st_folium(
+        m,
+        key="property_map",
+        height=530,
+        use_container_width=True,
+        returned_objects=["last_clicked", "last_object_clicked"],
+        feature_group_to_add=overlay,
+        center=tuple(st.session_state["map_center"]),
+        zoom=st.session_state["map_zoom"],
+        on_change=handle_map_change,
+    )
 
 # ═══════════════════════════════════════════════════════════════════
 # PREDICTION RESULTS
@@ -370,13 +453,17 @@ if predict_btn:
 
     city_enc = le_city.transform([sc])[0] if sc in le_city.classes_ else 0
     nbhd_enc = le_nbhd.transform([sd])[0] if sd in le_nbhd.classes_ else 0
+    baseline = model_baselines.get(ltype, {})
 
     X_in = pd.DataFrame([{
         'city_enc':city_enc, 'nbhd_enc':nbhd_enc,
-        'area_clean':area, 'rooms_clean':rooms, 'baths_clean':baths,
-        'has_elevator':0,
-        'has_parking':int(has_parking), 'has_ac':int(has_ac),
-        'is_furnished':int(is_furnished),
+        'area_clean':area,
+        'rooms_clean': baseline.get('rooms_clean', 3),
+        'baths_clean': baseline.get('baths_clean', 2),
+        'has_elevator': baseline.get('has_elevator', 0),
+        'has_parking': baseline.get('has_parking', 0),
+        'has_ac': baseline.get('has_ac', 0),
+        'is_furnished': baseline.get('is_furnished', 0),
     }])
 
     ml_ppsqm = np.expm1(model.predict(X_in)[0])
@@ -425,7 +512,7 @@ if predict_btn:
     m4.metric("إعلانات مطابقة", str(len(nb_t)))
 
     # ── Cards row ──────────────────────────────────────────────────
-    ra, rb, rc = st.columns([1.2, 1, 1])
+    ra, rb = st.columns([1.2, 1])
 
     with ra:
         st.markdown(f"""
@@ -484,32 +571,11 @@ if predict_btn:
               <thead><tr><th>الحي</th><th>وسيط ر/م²</th><th>إعلانات</th></tr></thead>
               <tbody>{rows_html}</tbody></table>""", unsafe_allow_html=True)
 
-    with rc:
-        st.markdown("**تأثير المواصفات**")
-        for feat,label in [('has_parking','🚗 موقف'),
-                            ('has_ac','❄️ مكيف'),('is_furnished','🛋️ مفروش')]:
-            ron  = X_in.copy(); ron[feat]  = 1
-            roff = X_in.copy(); roff[feat] = 0
-            d    = np.expm1(model.predict(ron)[0]) - np.expm1(model.predict(roff)[0])
-            sign = "+" if d >= 0 else ""
-            color= "#155724" if d >= 0 else "#721c24"
-            st.markdown(
-                f'<div class="irow"><span>{label}</span>'
-                f'<span style="color:{color};font-weight:500;">{sign}{d:,.0f} ر/م²</span></div>',
-                unsafe_allow_html=True
-            )
-
     # ═══════════════════════════════════════════════════════════════
     # TEXT REPORT
     # ═══════════════════════════════════════════════════════════════
     st.divider()
     st.markdown("### 📄 التقرير التفصيلي")
-
-    amenities_list = []
-    if has_parking:  amenities_list.append("موقف سيارة")
-    if has_ac:       amenities_list.append("مكيف مركزي")
-    if is_furnished: amenities_list.append("مفروش")
-    amenities_str = " · ".join(amenities_list) if amenities_list else "لا يوجد"
 
     verdict_text = ""
     if dist_med:
@@ -532,13 +598,11 @@ if predict_btn:
       </div>
 
       <div class="report-section">
-        <h4>🏗️ مواصفات العقار</h4>
+        <h4>🏗️ مدخلات التقييم</h4>
         نوع العملية: <strong>{'بيع' if ltype=='sale' else 'إيجار'}</strong><br>
         المساحة: <strong>{area} م²</strong>
         (نطاق البحث: {area-area_tol} – {area+area_tol} م²)<br>
-        عدد الغرف: <strong>{rooms}</strong> &nbsp;|&nbsp;
-        عدد الحمامات: <strong>{baths}</strong><br>
-        المرافق: <strong>{amenities_str}</strong>
+        المواصفات والمرافق: <strong>غير مستخدمة في الحساب</strong>
       </div>
 
       <div class="report-section">
