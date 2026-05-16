@@ -179,8 +179,8 @@ with left_col:
     st.markdown("**🏗️ تفاصيل العقار**")
 
     area = st.number_input("📐 المساحة (م²)", min_value=20, max_value=50000, value=150, step=10)
-    area_tol = st.slider("نطاق المساحة ± م²", 0, 50, 10, 5,
-                          help="سيتم البحث عن عقارات بمساحة قريبة")
+    area_tol = st.number_input("نطاق المساحة ± م²", min_value=0, max_value=100, value=10, step=5)
+    st.caption(f"البحث: {area-area_tol} م² ← {area+area_tol} م²")
     st.caption(f"البحث: {area-area_tol} م² ← {area+area_tol} م²")
 
     d1,d2 = st.columns(2)
