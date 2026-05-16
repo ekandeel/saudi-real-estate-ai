@@ -95,8 +95,24 @@ for k,v in {
     'sel_region':'منطقة الرياض','sel_city':'الرياض',
     'sel_district':'الملقا','sel_lat':24.812,'sel_lng':46.698,
     'map_center':[24.7136,46.6753],'map_zoom':11,
+    'location_source':'list',
+    'last_map_click_key': None,
+    'last_folium_map_key': None,
+    'last_folium_object_key': None,
 }.items():
     if k not in st.session_state: st.session_state[k]=v
+if 'last_list_selection' not in st.session_state:
+    st.session_state['last_list_selection'] = (
+        st.session_state['sel_region'],
+        st.session_state['sel_city'],
+        st.session_state['sel_district'],
+    )
+if 'last_list_widget_selection' not in st.session_state:
+    st.session_state['last_list_widget_selection'] = (
+        st.session_state.get('dd_region', st.session_state['sel_region']),
+        st.session_state.get('dd_city', st.session_state['sel_city']),
+        st.session_state.get('dd_district', st.session_state['sel_district']),
+    )
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("## 🏠 مستشار العقار السعودي الذكي")
@@ -135,8 +151,22 @@ with left_col:
         dist_idx  = districts.index(cur_dist) if cur_dist in districts else 0
         sel_district = st.selectbox("🏘️ الحي", districts, index=dist_idx, key='dd_district') if districts else None
 
-        # Sync to map
-        if sel_district:
+        # Sync to map only when the user changes the list selection.
+        list_selection = (sel_region, sel_city, sel_district)
+        if list_selection != st.session_state.get('last_list_widget_selection'):
+            st.session_state.update({
+                'sel_region': sel_region, 'sel_city': sel_city,
+                'sel_district': sel_district,
+                'location_source': 'list',
+                'last_click_info': False,
+                'last_map_click_key': None,
+                'last_folium_map_key': None,
+                'last_folium_object_key': None,
+                'last_list_widget_selection': list_selection,
+                'last_list_selection': list_selection,
+            })
+
+        if sel_district and st.session_state.get('location_source') == 'list':
             row = cent_df[(cent_df['city_ar']==sel_city)&(cent_df['district_ar']==sel_district)]
             if not row.empty:
                 st.session_state.update({
@@ -146,7 +176,7 @@ with left_col:
                     'map_center': [row.iloc[0]['lat'], row.iloc[0]['lng']],
                     'map_zoom': 14,
                 })
-        elif sel_city:
+        elif sel_city and st.session_state.get('location_source') == 'list':
             city_rows = cent_df[cent_df['city_ar']==sel_city]
             if not city_rows.empty:
                 st.session_state['map_center'] = [city_rows['lat'].mean(), city_rows['lng'].mean()]
@@ -158,7 +188,8 @@ with left_col:
             st.markdown(f"""
             <div class="mcard green">
                 ✅ <strong>{st.session_state['sel_city']}</strong>
-                ← حي <strong>{st.session_state['sel_district']}</strong>
+                ← حي <strong>{st.session_state['sel_district']}</strong><br>
+                <small>مركز الحساب: {st.session_state['sel_lat']:.5f}, {st.session_state['sel_lng']:.5f}</small>
             </div>
             """, unsafe_allow_html=True)
         else:
@@ -282,21 +313,38 @@ with map_col:
     """))
 
     map_data = st_folium(m, height=530, use_container_width=True,
-                         returned_objects=["last_clicked"])
+                         returned_objects=["last_clicked", "last_object_clicked"])
 
     # Handle map click
-    if map_data and map_data.get("last_clicked"):
-        clk = map_data["last_clicked"]
+    click_candidates = []
+    seen_click_keys = {}
+    if map_data and not predict_btn:
+        for state_key, click_data in (
+            ('last_folium_object_key', map_data.get("last_object_clicked")),
+            ('last_folium_map_key', map_data.get("last_clicked")),
+        ):
+            if click_data and "lat" in click_data and "lng" in click_data:
+                click_key = (round(float(click_data["lat"]), 6), round(float(click_data["lng"]), 6))
+                seen_click_keys[state_key] = click_key
+                if st.session_state.get(state_key) != click_key:
+                    click_candidates.append((state_key, click_data, click_key))
+
+    if click_candidates:
+        state_key, clk, click_key = click_candidates[0]
         d_arr, i_arr = cent_tree.query([[clk["lat"], clk["lng"]]], k=1)
-        dist_km_c = float(d_arr.ravel()[0]) * 111
         nr = cent_df.iloc[int(i_arr.ravel()[0])]
-        st.session_state.update({
+        click_update = {
             'sel_lat': clk["lat"], 'sel_lng': clk["lng"],
             'sel_region': nr['region_ar'], 'sel_city': nr['city_ar'],
             'sel_district': nr['district_ar'],
             'map_center': [clk["lat"], clk["lng"]],
             'map_zoom': 14, 'last_click_info': True,
-        })
+            'location_source': 'map',
+            'last_map_click_key': click_key,
+            'last_list_selection': (nr['region_ar'], nr['city_ar'], nr['district_ar']),
+        }
+        click_update.update(seen_click_keys)
+        st.session_state.update(click_update)
         st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════
